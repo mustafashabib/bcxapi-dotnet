@@ -268,6 +268,235 @@ namespace BCXAPI
             }
         }
 
+        private string _dynamicToJsonString(dynamic json_obj)
+        {
+            try
+            {
+                var d = json_obj as IDictionary<string, object>;
+                string output = System.Web.Helpers.Json.Encode(d.ToDictionary(x => x.Key, x => x.Value));
+                return output;
+            }
+            catch(Exception ex)
+            {
+                throw new Exceptions.BaseException("Cannot deserialize object to JSON string.", ex);
+            }
+        }
+
+        /// <summary>
+        /// helper method to make a POST request to basecamp.
+        /// </summary>
+        /// <param name="url">the api method endpoint being called</param>
+        /// <param name="bc_item">the basecamp item being posted</param>
+        /// <exception cref="Exceptions.UnauthorizedException">Will be thrown if you cannot refresh the basecamp token when it has expired</exception>
+        /// <exception cref="ArgumentException">URLs must end in .json</exception>
+        /// <exception cref="Exceptions.RateLimitExceeded">Thrown when you exceed the ratelimit - will contain information on when you can retry</exception>
+        /// <exception cref="Exceptions.Forbidden">Thrown when you do not have access to perform the action or your account limit has been reached.</exception>
+        private dynamic _postJSONToURL(string url, dynamic bc_object, out System.Uri location)
+        {
+            // ensure url ends with .json or .json?xxx
+            if (!url.ToLower().EndsWith(".json") &&
+                !(url.Contains("?") && url.ToLower().Substring(0, url.IndexOf("?")).EndsWith(".json")))
+            {
+                throw new ArgumentException("Invalid URL. URLs must end in .json", url);
+            }
+
+            try
+            {
+                System.Net.HttpWebRequest wr = (System.Net.HttpWebRequest)System.Net.HttpWebRequest.Create(url);
+                wr.Method = "POST";
+                wr.Headers.Add(System.Net.HttpRequestHeader.Authorization, string.Format("Bearer {0}", _accessToken.access_token));
+                wr.UserAgent = _appNameAndContact;
+                wr.ContentType = "application/x-www-form-urlencoded";
+                using (var writer = new System.IO.StreamWriter(wr.GetRequestStream()))
+                {
+                    string json_object = _dynamicToJsonString(bc_object);
+                    writer.Write(json_object);
+                    wr.ContentLength = json_object.Length;
+                }
+
+                var resp = (System.Net.HttpWebResponse)wr.BetterGetResponse();
+                if (resp.StatusCode == System.Net.HttpStatusCode.Created)
+                {
+                    using (var sw = new System.IO.StreamReader(resp.GetResponseStream()))
+                    {
+                        var strResp = sw.ReadToEnd();
+                        var json_results = Json.Decode(strResp);
+                        var resp_location = resp.Headers["Location"] != null ? resp.Headers["Location"] : null;
+                        location = new Uri(resp_location);
+                        return json_results;
+                    }
+                }
+                else if (resp.StatusCode == (System.Net.HttpStatusCode)429)//too many requests
+                {
+                    throw new Exceptions.RateLimitExceededException(int.Parse(resp.Headers["Retry-After"]));
+                }
+                else if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    if (resp.Headers[System.Net.HttpResponseHeader.WwwAuthenticate] != null)
+                    {
+                        string www_auth = resp.Headers[System.Net.HttpResponseHeader.WwwAuthenticate];
+                        int error_start = www_auth.LastIndexOf("error=\"token_expired\"");
+                        if (error_start > -1)
+                        {       //need to refresh token
+                            throw new Exceptions.TokenExpired();
+                        }
+                    }
+
+                    //throw an unauthorized exception if you get here
+                    throw new Exceptions.UnauthorizedException();
+
+                }
+                else if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    throw new Exceptions.ForbiddenException();
+                }
+                else
+                {
+                    throw new Exceptions.GeneralAPIException("Try again later. Status code returned was " + (int)resp.StatusCode, (int)resp.StatusCode);
+                }
+            }
+            catch (Exceptions.BaseException)
+            {
+                throw;
+            }
+            catch
+            {
+                location = null;
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// gets the mime type for a file given its filename (with extension)
+        /// </summary>
+        /// <param name="file_name"></param>
+        /// <returns>the mimetype via the registry</returns>
+        private string _getMimeType(string file_name)
+        {
+            string mime = "application/octetstream";
+            try
+            {
+                string ext = System.IO.Path.GetExtension(file_name).ToLower();
+                Microsoft.Win32.RegistryKey rk = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey(ext);
+                if (rk != null && rk.GetValue("Content Type") != null)
+                {
+                    mime = rk.GetValue("Content Type").ToString();
+                }
+            }
+            catch
+            {
+                //ignore
+            }
+            return mime;
+        }
+        /// <summary>
+        /// helper method to post files to a URL, one at a time
+        /// </summary>
+        /// <param name="url">the api method endpoint being called</param>
+        /// <param name="files">the files to upload, one at a time. Key should be a filename with extension and value should be the byte[] for the file</param>
+        /// <exception cref="Exceptions.UnauthorizedException">Will be thrown if you cannot refresh the basecamp token when it has expired</exception>
+        /// <exception cref="ArgumentException">URLs must end in .json</exception>
+        /// <exception cref="Exceptions.RateLimitExceeded">Thrown when you exceed the ratelimit - will contain information on when you can retry</exception>
+        /// <exception cref="Exceptions.Forbidden">Thrown when you do not have access to perform the action or your account limit has been reached.</exception>
+        /// <returns>Dictionary<string,string> containing each file's name and it's token on the Basecamp servers</returns>
+        private Dictionary<string,string> _postFilesToURL(string url, Dictionary<string,byte[]> files)
+        {
+            var responses = new Dictionary<string,string>();
+
+            // ensure url ends with .json or .json?xxx
+            if (!url.ToLower().EndsWith(".json") &&
+                !(url.Contains("?") && url.ToLower().Substring(0, url.IndexOf("?")).EndsWith(".json")))
+            {
+                throw new ArgumentException("Invalid URL. URLs must end in .json", url);
+            }
+
+            try
+            {
+                foreach (var current_file in files)
+                {
+                    System.Net.HttpWebRequest wr = (System.Net.HttpWebRequest)System.Net.HttpWebRequest.Create(url);
+                    wr.Method = "POST";
+                    wr.Headers.Add(System.Net.HttpRequestHeader.Authorization, string.Format("Bearer {0}", _accessToken.access_token));
+                    wr.UserAgent = _appNameAndContact;
+                    wr.ContentType = "application/x-www-form-urlencoded";
+                    string boundary = "------------------------" + DateTime.Now.Ticks;
+                    wr.ContentType = "multipart/form-data; boundary=" + boundary;
+
+                    string formatted_data = string.Empty;
+
+                    StringBuilder stringBuilder = new StringBuilder();
+                    var fileTemplate = Environment.NewLine + "--" + boundary + Environment.NewLine +
+                        "Content-Disposition: filename=\"{0}\"" +
+                        Environment.NewLine + "Content-Type: {1}" + Environment.NewLine + Environment.NewLine;
+
+                    string file_name = current_file.Key;
+                    byte[] file_bytes = current_file.Value;
+                    formatted_data +=
+                        String.Format(fileTemplate, file_name, _getMimeType(file_name));
+                    formatted_data += Convert.ToBase64String(file_bytes);
+
+
+                    formatted_data += Environment.NewLine + "--" + boundary + "--";
+                    wr.ContentLength = formatted_data.Length;
+
+                    using (var writer = new System.IO.StreamWriter(wr.GetRequestStream()))
+                    {
+
+                        writer.Write(formatted_data);
+                    }
+
+                    var resp = (System.Net.HttpWebResponse)wr.BetterGetResponse();
+                    if (resp.StatusCode == System.Net.HttpStatusCode.OK)
+                    {
+                        using (var sw = new System.IO.StreamReader(resp.GetResponseStream()))
+                        {
+                            var strResp = sw.ReadToEnd();
+                            dynamic json_results = Json.Decode(strResp);
+
+                            responses.Add(file_name, json_results.token);//response from basecamp is {  "token": "4f71ea23-134660425d1818169ecfdbaa43cfc07f4e33ef4c"}
+                        }
+                    }
+                    else if (resp.StatusCode == (System.Net.HttpStatusCode)429)//too many requests
+                    {
+                        throw new Exceptions.RateLimitExceededException(int.Parse(resp.Headers["Retry-After"]));
+                    }
+                    else if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        if (resp.Headers[System.Net.HttpResponseHeader.WwwAuthenticate] != null)
+                        {
+                            string www_auth = resp.Headers[System.Net.HttpResponseHeader.WwwAuthenticate];
+                            int error_start = www_auth.LastIndexOf("error=\"token_expired\"");
+                            if (error_start > -1)
+                            {       //need to refresh token
+                                throw new Exceptions.TokenExpired();
+                            }
+                        }
+
+                        //throw an unauthorized exception if you get here
+                        throw new Exceptions.UnauthorizedException();
+
+                    }
+                    else if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                    {
+                        throw new Exceptions.ForbiddenException();
+                    }
+                    else
+                    {
+                        throw new Exceptions.GeneralAPIException("Try again later. Status code returned was " + (int)resp.StatusCode, (int)resp.StatusCode);
+                    }
+                }
+                return responses;
+            }
+            catch (Exceptions.BaseException)
+            {
+                throw;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         /// <summary>
         /// call this when you get a TokenExpired exception and store the new access token for future requests
         /// </summary>
@@ -303,6 +532,7 @@ namespace BCXAPI
             }
         }
 
+        /*gets*/
         public dynamic GetAccounts()
         {
             if (IsAuthenticated)
@@ -668,6 +898,23 @@ namespace BCXAPI
             if (IsAuthenticated)
             {
                 return _getJSONFromURL(string.Format(_BaseCampAPIURL, accountID, string.Format("calendars/{0}/calendar_events/{1}", calendarID, calendarEventID)));
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        /*posts*/
+        public dynamic CreateProject(int accountID, string name, string description)
+        {
+            if (IsAuthenticated)
+            {
+                dynamic project = new System.Dynamic.ExpandoObject();
+                project.name = name;
+                project.description = description;
+                Uri location;
+                return _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, "projects"), project, out location);
             }
             else
             {

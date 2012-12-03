@@ -9,5 +9,8 @@ namespace BCXAPI.Exceptions
     {
         public BaseException(string message) : base(message) {
         }
+        public BaseException(string message, Exception inner_exception) : base(message, inner_exception)
+        {
+        }
     }
 }

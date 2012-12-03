@@ -64,6 +64,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Exceptions\BaseException.cs" />
+    <Compile Include="Exceptions\ForbiddenException.cs" />
     <Compile Include="Exceptions\TokenExpired.cs" />
     <Compile Include="Exceptions\UnauthorizedException.cs" />
     <Compile Include="Exceptions\RateLimitExceededException.cs" />
