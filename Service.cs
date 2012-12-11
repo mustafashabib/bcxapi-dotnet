@@ -276,7 +276,7 @@ namespace BCXAPI
                 string output = System.Web.Helpers.Json.Encode(d.ToDictionary(x => x.Key, x => x.Value));
                 return output;
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 throw new Exceptions.BaseException("Cannot deserialize object to JSON string.", ex);
             }
@@ -325,6 +325,11 @@ namespace BCXAPI
                         location = new Uri(resp_location);
                         return json_results;
                     }
+                }
+                else if (resp.StatusCode == System.Net.HttpStatusCode.NoContent)
+                {
+                    location = null;
+                    return null;
                 }
                 else if (resp.StatusCode == (System.Net.HttpStatusCode)429)//too many requests
                 {
@@ -399,9 +404,9 @@ namespace BCXAPI
         /// <exception cref="Exceptions.RateLimitExceeded">Thrown when you exceed the ratelimit - will contain information on when you can retry</exception>
         /// <exception cref="Exceptions.Forbidden">Thrown when you do not have access to perform the action or your account limit has been reached.</exception>
         /// <returns>Dictionary<string,string> containing each file's name and it's token on the Basecamp servers</returns>
-        private Dictionary<string,string> _postFilesToURL(string url, Dictionary<string,byte[]> files)
+        private IDictionary<string, string> _postFilesToURL(string url, IDictionary<string, byte[]> files)
         {
-            var responses = new Dictionary<string,string>();
+            var responses = new Dictionary<string, string>();
 
             // ensure url ends with .json or .json?xxx
             if (!url.ToLower().EndsWith(".json") &&
@@ -446,7 +451,7 @@ namespace BCXAPI
                     }
 
                     var resp = (System.Net.HttpWebResponse)wr.BetterGetResponse();
-                    if (resp.StatusCode == System.Net.HttpStatusCode.OK)
+                    if (resp.StatusCode == System.Net.HttpStatusCode.OK || resp.StatusCode == System.Net.HttpStatusCode.NoContent)
                     {
                         using (var sw = new System.IO.StreamReader(resp.GetResponseStream()))
                         {
@@ -518,7 +523,7 @@ namespace BCXAPI
                 {
                     dataStream.Write(byteArray, 0, byteArray.Length);
                 }
-                
+
                 var resp = (System.Net.HttpWebResponse)wr.GetResponse();
                 using (var sw = new System.IO.StreamReader(resp.GetResponseStream()))
                 {
@@ -905,16 +910,65 @@ namespace BCXAPI
             }
         }
 
-        /*posts*/
-        public dynamic CreateProject(int accountID, string name, string description)
+        /*Creation via POST*/
+
+        /// <summary>
+        /// This will create a project and return the object as it exists on basecamp. The out parameter location will give you the URL for the project.
+        /// </summary>
+        /// <param name="accountID">Your accountID</param>
+        /// <param name="name">the name of the project</param>
+        /// <param name="description">a description for the project</param>
+        /// <param name="location">the out parameter whcih will contain the URL for the project once created.</param>
+        /// <returns>a dynamic representing the object on basecamp's servers</returns>
+        public dynamic CreateProject(int accountID, string name, string description, out Uri location)
         {
             if (IsAuthenticated)
             {
                 dynamic project = new System.Dynamic.ExpandoObject();
                 project.name = name;
                 project.description = description;
-                Uri location;
                 return _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, "projects"), project, out location);
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        public void GrantAccess(int accountID, int projectID, long[] ids = null, string[] email_addresses = null)
+        {
+            if (IsAuthenticated)
+            {
+                if (ids == null && email_addresses == null)
+                {
+                    throw new Exceptions.BaseException("Arguments missing", new ArgumentNullException("ids or email addresses"));
+                }
+
+                dynamic access = new System.Dynamic.ExpandoObject();
+                access.email_addresses = email_addresses;
+                access.ids = ids;
+                Uri location = null;
+                _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, string.Format("/projects/{0}/accesses", projectID)), access, out location);
+                return;
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        /// <summary>
+        /// Makes a request to basecamp for each file in the array - you probably want to call this method asynchronously.
+        /// </summary>
+        /// <param name="accountID">the account id</param>
+        /// <param name="files">a key-value collection of filenames and their related file bytes</param>
+        /// <returns>a key-value collection of the files uploaded and their token on basecamp. 
+        /// Use this token to associate an attachment to uploads, messages, or comments.</returns>
+        public IDictionary<string, string> CreateAttachments(int accountID, IDictionary<string, byte[]> files)
+        {
+            if (IsAuthenticated)
+            {
+                return _postFilesToURL(string.Format(_BaseCampAPIURL, accountID, "attachments"), files);
             }
             else
             {
