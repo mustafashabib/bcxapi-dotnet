@@ -306,12 +306,20 @@ namespace BCXAPI
                 wr.Method = "POST";
                 wr.Headers.Add(System.Net.HttpRequestHeader.Authorization, string.Format("Bearer {0}", _accessToken.access_token));
                 wr.UserAgent = _appNameAndContact;
-                wr.ContentType = "application/x-www-form-urlencoded";
+                wr.ContentType = "application/json";
+                string json_object = string.Empty;
+                if (bc_object is string)
+                {
+                    json_object = (string)bc_object;
+                }
+                else
+                {
+                    json_object = _dynamicToJsonString(bc_object);
+                }
+                wr.ContentLength = json_object.Length;
                 using (var writer = new System.IO.StreamWriter(wr.GetRequestStream()))
                 {
-                    string json_object = _dynamicToJsonString(bc_object);
                     writer.Write(json_object);
-                    wr.ContentLength = json_object.Length;
                 }
 
                 var resp = (System.Net.HttpWebResponse)wr.BetterGetResponse();
@@ -423,30 +431,30 @@ namespace BCXAPI
                     wr.Method = "POST";
                     wr.Headers.Add(System.Net.HttpRequestHeader.Authorization, string.Format("Bearer {0}", _accessToken.access_token));
                     wr.UserAgent = _appNameAndContact;
-                    wr.ContentType = "application/x-www-form-urlencoded";
-                    string boundary = "------------------------" + DateTime.Now.Ticks;
-                    wr.ContentType = "multipart/form-data; boundary=" + boundary;
+                    string boundary = "------------------------" + DateTime.Now.Ticks.ToString("x");
+                    byte[] boundary_bytes = System.Text.Encoding.ASCII.GetBytes(
+                        Environment.NewLine + "--" + boundary + Environment.NewLine);
+
+                    wr.ContentType = string.Format("{0}; boundary={1}", 
+                        _getMimeType(current_file.Key), 
+                        boundary);
+                    wr.KeepAlive = true;
 
                     string formatted_data = string.Empty;
-
-                    StringBuilder stringBuilder = new StringBuilder();
-                    var fileTemplate = Environment.NewLine + "--" + boundary + Environment.NewLine +
-                        "Content-Disposition: filename=\"{0}\"" +
-                        Environment.NewLine + "Content-Type: {1}" + Environment.NewLine + Environment.NewLine;
-
                     string file_name = current_file.Key;
                     byte[] file_bytes = current_file.Value;
-                    formatted_data +=
-                        String.Format(fileTemplate, file_name, _getMimeType(file_name));
+                    formatted_data += boundary;
+                    formatted_data += string.Format("Content-Disposition: form-data; name=\"{0}\"; filename=\"{0}\"", file_name);
+                    formatted_data += Environment.NewLine +
+                        string.Format("Content-Type: {0}", _getMimeType(file_name));
+                    formatted_data += Environment.NewLine + Environment.NewLine;
                     formatted_data += Convert.ToBase64String(file_bytes);
 
-
-                    formatted_data += Environment.NewLine + "--" + boundary + "--";
+                    formatted_data += Environment.NewLine + "--" + boundary + "--" + Environment.NewLine;
                     wr.ContentLength = formatted_data.Length;
 
                     using (var writer = new System.IO.StreamWriter(wr.GetRequestStream()))
                     {
-
                         writer.Write(formatted_data);
                     }
 
@@ -948,7 +956,7 @@ namespace BCXAPI
                 access.email_addresses = email_addresses;
                 access.ids = ids;
                 Uri location = null;
-                _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, string.Format("/projects/{0}/accesses", projectID)), access, out location);
+                _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, string.Format("projects/{0}/accesses", projectID)), access, out location);
                 return;
             }
             else
@@ -969,6 +977,38 @@ namespace BCXAPI
             if (IsAuthenticated)
             {
                 return _postFilesToURL(string.Format(_BaseCampAPIURL, accountID, "attachments"), files);
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        public dynamic CreateFileUploadForProject(int accountID, int project_id, string token, string content, string file_name, out Uri location, int[] subscribers = null)
+        {
+            if (IsAuthenticated)
+            {
+                string upload_template = "{{ " +
+  "\"content\": \"{0}\"," +
+  "\"attachments\": [" +
+   " {{" +
+   "   \"token\": \"{1}\"," +
+   "   \"name\": \"{2}\"" +
+   " }}" +
+  "]," +
+  "\"subscribers\": {3}" +
+"}}";
+                if (subscribers == null)
+                {
+                    subscribers = new int[] { };
+                }
+                    string subscribers_string = string.Format("[{0}]", string.Join(",", subscribers));
+                    string upload = string.Format(upload_template, content, token, file_name, subscribers_string);
+                
+                return _postJSONToURL(
+                    string.Format(_BaseCampAPIURL, accountID, 
+                    string.Format("projects/{0}/uploads",project_id)), 
+                    upload, out location);
             }
             else
             {
