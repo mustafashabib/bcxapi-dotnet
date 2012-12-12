@@ -21,7 +21,28 @@ namespace BCXAPI
         private readonly string _redirectURI; //this must match what you've set up in your basecamp integration page
         private readonly string _appNameAndContact; //this will go in your User-Agent header when making requests. 37s recommends you add your app name and a contact URL or email.
 
-
+        public enum CommentableTopic{
+            Messages,
+            CalendarEvents,
+            Uploads,
+            Todos
+        }
+        private string _CommentableTopicToString(CommentableTopic ct)
+        {
+            switch (ct)
+            {
+                case CommentableTopic.CalendarEvents:
+                    return "calendar_events";
+                case CommentableTopic.Messages:
+                    return "messages";
+                case CommentableTopic.Todos:
+                    return "todos";
+                case CommentableTopic.Uploads:
+                    return "uploads";
+                default:
+                    throw new Exceptions.BaseException("Invalid commentable topic.");
+            }
+        }
         private static BCXAPI.Providers.IResponseCache _cache;
         private dynamic _accessToken;
         //get or set the access token here - this way if you just got it back from basecamp you dont need to reconstruct to entire object
@@ -407,12 +428,13 @@ namespace BCXAPI
         /// </summary>
         /// <param name="url">the api method endpoint being called</param>
         /// <param name="files">the files to upload, one at a time. Key should be a filename with extension and value should be the byte[] for the file</param>
+        /// <param name="timeout">time in ms before timing out, defaults to 5 min</param>
         /// <exception cref="Exceptions.UnauthorizedException">Will be thrown if you cannot refresh the basecamp token when it has expired</exception>
         /// <exception cref="ArgumentException">URLs must end in .json</exception>
         /// <exception cref="Exceptions.RateLimitExceeded">Thrown when you exceed the ratelimit - will contain information on when you can retry</exception>
         /// <exception cref="Exceptions.Forbidden">Thrown when you do not have access to perform the action or your account limit has been reached.</exception>
         /// <returns>Dictionary<string,string> containing each file's name and it's token on the Basecamp servers</returns>
-        private IDictionary<string, string> _postFilesToURL(string url, IDictionary<string, byte[]> files)
+        private IDictionary<string, string> _postFilesToURL(string url, IDictionary<string, byte[]> files, int timeout = 300000)
         {
             var responses = new Dictionary<string, string>();
 
@@ -431,7 +453,7 @@ namespace BCXAPI
                     wr.Method = "POST";
                     wr.Headers.Add(System.Net.HttpRequestHeader.Authorization, string.Format("Bearer {0}", _accessToken.access_token));
                     wr.UserAgent = _appNameAndContact;
-                    wr.Timeout = 1000 * 60 * 5;//5min?
+                    wr.Timeout = timeout;
                     wr.ContentType = _getMimeType(current_file.Key);
                     wr.KeepAlive = true;
 
@@ -976,26 +998,115 @@ namespace BCXAPI
             if (IsAuthenticated)
             {
                 string upload_template = "{{ " +
-  "\"content\": \"{0}\"," +
-  "\"attachments\": [" +
-   " {{" +
-   "   \"token\": \"{1}\"," +
-   "   \"name\": \"{2}\"" +
-   " }}" +
-  "]," +
-  "\"subscribers\": {3}" +
-"}}";
+                                          "\"content\": \"{0}\"," +
+                                          "\"attachments\": [" +
+                                           " {{" +
+                                           "   \"token\": \"{1}\"," +
+                                           "   \"name\": \"{2}\"" +
+                                           " }}" +
+                                          "]," +
+                                          "\"subscribers\": {3}" +
+                                        "}}";
                 if (subscribers == null)
                 {
                     subscribers = new int[] { };
                 }
-                    string subscribers_string = string.Format("[{0}]", string.Join(",", subscribers));
-                    string upload = string.Format(upload_template, content, token, file_name, subscribers_string);
-                
+                string subscribers_string = string.Format("[{0}]", string.Join(",", subscribers));
+                string upload = string.Format(upload_template, content, token, file_name, subscribers_string);
+
                 return _postJSONToURL(
-                    string.Format(_BaseCampAPIURL, accountID, 
-                    string.Format("projects/{0}/uploads",project_id)), 
+                    string.Format(_BaseCampAPIURL, accountID,
+                    string.Format("projects/{0}/uploads", project_id)),
                     upload, out location);
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        public dynamic CreateCalendarEventForProject(int accountID, int projectID, string summary,
+            string description,  DateTime starts_at, out Uri location, bool all_day=false,
+            DateTime? ends_at = null )
+        {
+            if (IsAuthenticated)
+            {
+                dynamic calendar_event = new System.Dynamic.ExpandoObject();
+                calendar_event.summary = summary;
+                calendar_event.description = description;
+                calendar_event.all_day = all_day;
+                calendar_event.starts_at = starts_at.ToString("yyyy-MM-ddTHH:mmzzz");
+                if (ends_at != null)
+                {
+                    calendar_event.ends_at = ends_at.Value.ToString("yyyy-MM-ddTHH:mmzzz");
+                }
+                return _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, string.Format("projects/{0}/calendar_events", projectID)),
+                    calendar_event, out location);
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        public dynamic CreateCalendarEventForCalendar(int accountID, int calendarID, string summary,
+            string description, DateTime starts_at, out Uri location,  bool all_day = false,
+            DateTime? ends_at = null)
+        {
+            if (IsAuthenticated)
+            {
+                 dynamic calendar_event = new System.Dynamic.ExpandoObject();
+                calendar_event.summary = summary;
+                calendar_event.description = description;
+                calendar_event.all_day = all_day;
+                calendar_event.starts_at = starts_at.ToString("yyyy-MM-ddTHH:mmzzz");
+                if (ends_at != null)
+                {
+                    calendar_event.ends_at = ends_at.Value.ToString("yyyy-MM-ddTHH:mmzzz");
+                }
+                return _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, string.Format("calendars/{0}/calendar_events", calendarID)),
+                    calendar_event, out location);
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        public dynamic CreateCalendar(int accountID, string name, out Uri location)
+        {
+            if (IsAuthenticated)
+            {
+                dynamic calendar = new System.Dynamic.ExpandoObject();
+                calendar.name = name;
+                return _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, "calendars"),
+                    calendar, out location);
+            }
+            else
+            {
+                throw new Exceptions.UnauthorizedException();
+            }
+        }
+
+        public dynamic CreateCommentForCommentable(int accountID, int projectID, CommentableTopic topic, int topic_id, string content,
+            int[] subscribers_to_notify = null, IDictionary<string, string> attachments = null)
+        {
+            if (IsAuthenticated)
+            {
+                dynamic comment = new System.Dynamic.ExpandoObject();
+                comment.content = content;
+                if (subscribers_to_notify != null)
+                {
+                    comment.subscribers = subscribers_to_notify;
+                }
+                if (attachments != null)
+                {
+                    comment.attachments = (from a in attachments select new { token = a.Value, name = a.Key }).ToArray();
+                }
+                string endpoint = string.Format("projects/{0}/{1}/{2}/comments", projectID, _CommentableTopicToString(topic), topic_id);
+                Uri location;
+                return _postJSONToURL(string.Format(_BaseCampAPIURL, accountID, endpoint),
+                    comment, out location);
             }
             else
             {
