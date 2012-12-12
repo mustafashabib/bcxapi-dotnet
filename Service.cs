@@ -431,31 +431,18 @@ namespace BCXAPI
                     wr.Method = "POST";
                     wr.Headers.Add(System.Net.HttpRequestHeader.Authorization, string.Format("Bearer {0}", _accessToken.access_token));
                     wr.UserAgent = _appNameAndContact;
-                    string boundary = "------------------------" + DateTime.Now.Ticks.ToString("x");
-                    byte[] boundary_bytes = System.Text.Encoding.ASCII.GetBytes(
-                        Environment.NewLine + "--" + boundary + Environment.NewLine);
-
-                    wr.ContentType = string.Format("{0}; boundary={1}", 
-                        _getMimeType(current_file.Key), 
-                        boundary);
+                    wr.Timeout = 1000 * 60 * 5;//5min?
+                    wr.ContentType = _getMimeType(current_file.Key);
                     wr.KeepAlive = true;
 
-                    string formatted_data = string.Empty;
-                    string file_name = current_file.Key;
                     byte[] file_bytes = current_file.Value;
-                    formatted_data += boundary;
-                    formatted_data += string.Format("Content-Disposition: form-data; name=\"{0}\"; filename=\"{0}\"", file_name);
-                    formatted_data += Environment.NewLine +
-                        string.Format("Content-Type: {0}", _getMimeType(file_name));
-                    formatted_data += Environment.NewLine + Environment.NewLine;
-                    formatted_data += Convert.ToBase64String(file_bytes);
+                    //string formatted_data = Convert.ToBase64String(file_bytes);
 
-                    formatted_data += Environment.NewLine + "--" + boundary + "--" + Environment.NewLine;
-                    wr.ContentLength = formatted_data.Length;
+                    wr.ContentLength = file_bytes.LongLength;
 
-                    using (var writer = new System.IO.StreamWriter(wr.GetRequestStream()))
+                    using (var writer = new System.IO.BinaryWriter(wr.GetRequestStream()))
                     {
-                        writer.Write(formatted_data);
+                        writer.Write(file_bytes);
                     }
 
                     var resp = (System.Net.HttpWebResponse)wr.BetterGetResponse();
@@ -466,7 +453,7 @@ namespace BCXAPI
                             var strResp = sw.ReadToEnd();
                             dynamic json_results = Json.Decode(strResp);
 
-                            responses.Add(file_name, json_results.token);//response from basecamp is {  "token": "4f71ea23-134660425d1818169ecfdbaa43cfc07f4e33ef4c"}
+                            responses.Add(current_file.Key, json_results.token);//response from basecamp is {  "token": "4f71ea23-134660425d1818169ecfdbaa43cfc07f4e33ef4c"}
                         }
                     }
                     else if (resp.StatusCode == (System.Net.HttpStatusCode)429)//too many requests
